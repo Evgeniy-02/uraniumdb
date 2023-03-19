@@ -1,0 +1,15 @@
+.dub
+docs.json
+__dummy.html
+docs/
+/02-lab-big-data
+02-lab-big-data.so
+02-lab-big-data.dylib
+02-lab-big-data.dll
+02-lab-big-data.a
+02-lab-big-data.lib
+02-lab-big-data-test-*
+*.exe
+*.o
+*.obj
+*.lst

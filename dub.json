@@ -1,0 +1,9 @@
+{
+	"name": "02-lab-big-data",
+	"description": "Simple key-value database with logging, transactions and isolation mechanism",
+	"authors": [
+		"Lysenko E., IU9-21M"
+	],
+	"copyright": "Copyright © 2023, Lysenko E., IU9-21M",
+	"license": "proprietary"
+}
