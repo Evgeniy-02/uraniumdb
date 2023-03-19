@@ -119,10 +119,10 @@ public:
 	 * Examples:
 	 * auto db = new Uranium!string("smiles_db.um");
 	 * ---
-	 * db("C O CC COC CC(=O)O"); //add elements: O CC COC CC(=O)O
-     * db("R 5"); // get 5 random elements
-     * db("U CC C1=CC=CC=C1"); // replace CC on C1=CC=CC=C1
-     * db("D C1=CC=CC=C1"); // delete C1=CC=CC=C1
+	 * db(Op.C, " O ", "CC COC CC(=O)O"); add elements: O CC COC CC(=O)O
+     * writeln(db(Op.R, "5")); // get 5 random elements
+     * db(Op.U "CC", "C1=CC=CC=C1"); // replace CC on C1=CC=CC=C1
+     * db(Op.D, "C1=CC=CC=C1", "C"); // delete C1=CC=CC=C1 and "C"
 	 * ---
 	 */
     R opCall(R = Response, T...)(Op op, T args)
