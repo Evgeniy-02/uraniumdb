@@ -41,74 +41,57 @@ enum Op : byte
     D // delete
 }
 
-unittest
-{
-    struct sttr
-    {
-        int i;
-        sttr* next;
-    }
-
-    auto ur = new Uranium!(string, sttr);
-    auto a = sttr(1, null);
-    ur.put("sttr", a);
-    assert(ur.get("sttr") == a);
-}
-
+/**
+  * Uranium is the simple database which halps 
+  * to get random set of the N elements
+  * 
+  * Supported operations:
+  * "C arg1 arg2 argN" - add elements to DB
+  * "R 5"              - get 5 random elements
+  * "U oldVal newVal"  - replace oldVal on newVal
+  * "D value"          - hide value in DB
+  */
 class Uranium(V)
 {
+    import std.conv : to;
+
 private:
     V[] _state;
 
-    void add(V val)
+    void add(V[] vals...)
     {
-        _state ~= val;
+        _state ~= vals;
     }
 
-    V[] get(int n, bool function(V) filter)
+    V[] get(size_t n)
+    {
+        import std.random : randomCover, MinstdRand0, randomSample, unpredictableSeed;
+        import std.range : array;
+        import std.algorithm : filter;
+
+        auto rnd = MinstdRand0(unpredictableSeed);
+
+        version (D_LP64) // https://issues.dlang.org/show_bug.cgi?id=15147
+            return _state.randomCover(rnd).filter!"!a.empty".array()[0 .. n];
+
+    }
+
+    void update(V old, V n)
     {
         import std.array, std.parallelism;
-        import std.random : randomCover,MinstdRand0, unpredictableSeed;
 
-        auto r = appender!(V[]);
-        r.reserve(100); // 100 elements default
-        foreach (e; parallel(_state)) //parallel foreach
-        {
-            if (filter(e))
-            {
-                r ~= e;
-            }
-        }
+        foreach (i, e; parallel(_state)) //parallel foreach
+            if (e == old)
+                _state[i] = n;
 
-        debug writeln(_state);
-        debug writeln(r[]);
-
-        return cast(V[]) r[];
-    }
-    
-    void remove(V val){
-    	_state -= val;
-    }
-    
-    void update(V old, V n){
-    	_state -= old;
-    	_state += n;
+        _state ~= n;
     }
 
-    //    void update(V oldVal, V newVal)
-    //    {
-    //        auto oldVal = _state[key];
-    //        _state[key] = newVal;
-    //        return oldVal;
-    //    }
-    //
-    //    void remove(V key)
-    //    {
-    //        auto oldVal = _state[key];
-    //        _state.remove(key);
-    //        return oldVal;
-    //
-    //    }
+    void remove(V[] vals...)
+    {
+        foreach (v; vals)
+            update(v, "");
+    }
 
 public:
 
@@ -117,58 +100,85 @@ public:
         import std.array : appender;
         import std.stdio : File;
         import std.algorithm : filter;
-        import std.conv : to;
 
         auto state = appender!(V[]);
         auto reader = File(filename, "r");
         auto lines = reader.byLine().filter!"!a.empty"();
         foreach (ref line; lines)
         {
-            debug writeln(line);
             state ~= line.to!string;
         }
 
-        debug writeln("after read", state);
+        // debug writeln("after read ", state);
         _state = cast(V[]) state[];
-        debug writeln(_state);
     }
 
     /**
-	 * Call Urinium using any type T that can be converted to a string
+	 * Call Uranium using any type T that can be converted to a string
 	 *
 	 * Examples:
-	 *
+	 * auto db = new Uranium!string("smiles_db.um");
 	 * ---
-	 * send("SET name Adil")
-	 * send("GET", "*") == send("GET *")
+	 * db("C O CC COC CC(=O)O"); //add elements: O CC COC CC(=O)O
+     * db("R 5"); // get 5 random elements
+     * db("U CC C1=CC=CC=C1"); // replace CC on C1=CC=CC=C1
+     * db("D C1=CC=CC=C1"); // delete C1=CC=CC=C1
 	 * ---
 	 */
     R opCall(R = Response, T...)(Op op, T args)
     {
-        import std.stdio;
-        import std.conv;
+        import std.array : appender;
 
-        Response[] r;
-        r ~= Response(ResponseType.Status, "ok");
-        switch (op) with (Op)
+        auto request = appender!string;
+        request ~= op.to!string;
+
+        foreach (arg; args)
+            request ~= arg.to!string;
+
+        return opCall(cast(string) request[]);
+    }
+
+    /**
+	 * Call Uranium using request string
+	 *
+	 * Examples:
+	 * auto db = new Uranium!string("smiles_db.um");
+	 * ---
+	 * db("C O CC COC CC(=O)O"); // add elements: O CC COC CC(=O)O
+     * db("R 5");                // get 5 random elements
+     * db("U CC C1=CC=CC=C1");   // replace CC on C1=CC=CC=C1
+     * db("D C1=CC=CC=C1");      // delete C1=CC=CC=C1
+	 * ---
+	 */
+    R opCall(R = Response)(string request)
+    {
+        import std.array : split;
+        import std.uni : isWhite;
+        import std.algorithm.iteration : joiner;
+        import std.string : strip;
+
+        string[] p = request.strip.split!isWhite;
+        switch (p[0])
         {
-        case C:
-            debug writeln("call C");
+        case "C":
+            add(p[1 .. $]);
             break;
-        case R:
-            // return Response(ResponseType.Status, get(args[0].to!int, (e) => true).to!string);
-            debug writeln(get(args[0].to!int, (e) => true).to!string);
+        case "R":
+            return Response(ResponseType.Status, get(p[1].to!ulong).joiner(" ").to!string);
+        case "U":
+            update(p[1], p[2]);
+            break;
+        case "D":
+            remove(p[1 .. $]);
             break;
         default:
-            break;
+            return Response(ResponseType.Invalid, "invalid operation");
         }
-        return cast(R) r[0];
+        return Response(ResponseType.Status, "ok");
     }
 
     override string toString()
     {
-        import std.conv : to;
-
         return to!string(_state);
     }
 
