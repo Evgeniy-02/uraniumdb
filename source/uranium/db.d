@@ -1,25 +1,22 @@
 module uranium.db;
 
-import std.stdio : writeln;
+import std.stdio : File, writeln;
 
 import std.conv : to;
-import std.array : appender, split;
-import std.concurrency : send, receiveOnly, spawn, Tid, thisTid;
+import std.array : appender, split, array;
+import std.concurrency : send, receiveOnly, Tid, thisTid;
 import std.random : randomCover, MinstdRand0, randomSample, unpredictableSeed;
 import std.range : array;
-import std.algorithm : filter;
+import std.algorithm : filter, each;
 import std.uni : isWhite;
-import std.algorithm.iteration : joiner;
+import std.algorithm.iteration : joiner, map, filter;
 import std.string : strip;
+import std.file : isFile, dirEntries, SpanMode, remove;
+import std.path : baseName;
 
-enum ResponseType : byte
-{
-    Invalid,
-    Status,
-    Error,
-    Nil
-}
-
+/**
+ * Responses sent by Uranium
+ */
 struct Response
 {
     ResponseType type;
@@ -42,25 +39,32 @@ struct Response
 
 }
 
-/** Operations
-*/
-enum Op : byte
+/**
+ * Types of responses
+ */
+enum ResponseType : byte
 {
-    C, // create
-    R, // read
-    U, // update
-    D // delete
+    Invalid,
+    Status,
+    Error,
+    Nil
 }
 
+/// Directory for transaction logs
+enum LOG_DIR = "./log/";
+
 /**
-  * Uranium is the simple database which halps 
-  * to get random set of the N elements
+  * Uranium is the simple database which helps 
+  * to get random set of the N elements 
+  * (It uses for the machine learning)
   * 
   * Supported operations:
-  * "C arg1 arg2 argN" - add elements to DB
-  * "R 5"              - get 5 random elements
-  * "U oldVal newVal"  - replace oldVal on newVal
-  * "D value"          - hide value in DB
+  * "C arg1 arg2 argN"       - add elements to DB
+  * "R 5"                    - get 5 random elements
+  * "U oldVal newVal"        - replace oldVal on newVal
+  * "D value"                - hide value in DB
+  * "close"                  - close connection
+  * "recover transactions"   - recover aborted transactions
   */
 class Uranium(V)
 {
@@ -99,44 +103,28 @@ private:
             update(v, "");
     }
 
-    /**
-     * Call Uranium using any type T that can be converted to a string
-     *
-     * Examples:
-     * auto db = new Uranium!string("smiles_db.um");
-     * ---
-     * db(Op.C, " O ", "CC COC CC(=O)O"); add elements: O CC COC CC(=O)O
-     * writeln(db(Op.R, "5")); // get 5 random elements
-     * db(Op.U "CC", "C1=CC=CC=C1"); // replace CC on C1=CC=CC=C1
-     * db(Op.D, "C1=CC=CC=C1", "C"); // delete C1=CC=CC=C1 and "C"
-     * ---
-     */
-    // R opCall(R = Response, T...)(Op op, T args)
-    // {
-    //     auto request = appender!string;
-    //     request.reserve(70);
-    //     request ~= op.to!string;
+    Response recoverTransactions()
+    {
+        string[] logfiles = dirEntries(LOG_DIR, "*.log", SpanMode.shallow).filter!(a => a.isFile)
+            .map!((return a) => baseName(a.name))
+            .array; // https://dlang.org/phobos/std_file.html#dirEntries
 
-    //     foreach (arg; args)
-    //         request ~= arg.to!string;
-
-    //     return opCall(cast(string) request[]);
-    // }
+        auto result = appender!(Response[]);
+        if (!logfiles.length)
+            return Response(ResponseType.Status, "transaction logs is empty");
+        foreach (filename; logfiles)
+        {
+            auto file = File(LOG_DIR ~ filename);
+            file.readln.split("&&").map!"a.strip"
+                .filter!"!a.empty"
+                .each!(request => execute(request));
+        }
+        return Response(ResponseType.Status, "success");
+    }
 
     /**
-     * Call Uranium using request string
-     *
-     * Examples:
-     * auto db = new Uranium!string("smiles_db.um");
-     * ---
-     * db("C O CC COC CC(=O)O"); // add elements: O CC COC CC(=O)O
-     * db("R 5");                // get 5 random elements
-     * db("U CC C1=CC=CC=C1");   // replace CC on C1=CC=CC=C1
-     * db("D C1=CC=CC=C1");      // delete C1=CC=CC=C1
-     * ---
+     * Parser for requests
      */
-    /*    R opCall(R = Response)(string request) { } */
-
     R execute(R = Response)(string request)
     {
         string[] p = request.strip.split!isWhite;
@@ -153,6 +141,10 @@ private:
         case "D":
             remove(p[1 .. $]);
             break;
+        case "recover":
+            if (p[1] == "transactions")
+                return recoverTransactions();
+            goto default;
         default:
             return Response(ResponseType.Invalid, "invalid operation");
         }
@@ -179,7 +171,7 @@ public:
     }
 
     /**
-     * Receive requests from any threads and execute that
+     * Receive requests from thread queue and execute them
      */
     void runRequestReceiver()
     {
@@ -191,7 +183,12 @@ public:
             auto requests = receiveOnly!(Tid, string);
             // debug writeln(__FILE__ ~ ":" ~ __LINE__ ~ requests);
             if (requests[1] == "close")
+            {
+                result ~= Response(ResponseType.Status, "good bye");
+                requests[0].send(result[].idup);
                 break;
+            }
+
             foreach (request; requests[1].split("&&"))
             {
                 result ~= execute(request);
@@ -225,27 +222,37 @@ interface Transaction
     Response[] commit();
 }
 
+/**
+ * Transaction implementation for Uranium DB
+ */
 class TransactionImpl : Transaction
 {
     private auto _log = appender!(string[]);
+    private File* _logfile;
     private Tid _dbId;
 
     this(Tid dbId)
     {
         _dbId = dbId;
+        _logfile = new File(LOG_DIR ~ "transaction-" ~ thisTid.to!string ~ ".log", "w");
     }
 
     override Transaction opCall(string request)
     {
         _log ~= request;
+        _logfile.write(request ~ " && ");
         return this;
     }
 
     override Response[] commit()
     {
         _dbId.send(thisTid, _log[].joiner(" && ").to!string);
+        auto response = receiveOnly!(immutable(Response)[]).dup;
 
-        return receiveOnly!(immutable(Response)[]).dup;
+        _logfile.close;
+        _logfile.name.remove;
+
+        return response;
     }
 }
 
