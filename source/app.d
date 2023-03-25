@@ -14,10 +14,26 @@ void main()
     // recover transactions from a crash
     writeln("recovery: ", db.run("recover transactions"));
 
-    auto tr1 = db.newTransaction;
-    tr1("C CN")("C CCl")("R 5");
-    tr1("U CCl CCCl");
-    writeln(tr1.commit);
+    spawn((Tid db0) {
+        auto tr1 = db0.newTransaction;
+        tr1("C CN")("C CCl")("R 5");
+        tr1("U CCl CCCl");
+        writeln(tr1.commit);
+
+        ownerTid.send(true);
+    }, db);
+
+    spawn((Tid db0) {
+        auto tr2 = db0.newTransaction;
+        tr2("C CN")("C CCl")("R 5");
+        writeln(tr2.commit);
+
+        ownerTid.send(true);
+    }, db);
+
+    // wait for transaction finishing before close db
+    receiveOnly!bool;
+    receiveOnly!bool;
 
     // finish Uranium thread
     while (db.run("close") != Response(ResponseType.Status, "good bye"))
